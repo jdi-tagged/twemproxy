@@ -98,6 +98,10 @@ static struct command conf_commands[] = {
       conf_add_server,
       offsetof(struct conf_pool, server) },
 
+    { string("failover"),
+      conf_set_string,
+      offsetof(struct conf_pool, failover_name) },
+
     null_command
 };
 
@@ -195,6 +199,8 @@ conf_pool_init(struct conf_pool *cp, struct string *name)
 
     cp->valid = 0;
 
+    string_init(&cp->failover_name);
+
     status = string_duplicate(&cp->name, name);
     if (status != NC_OK) {
         return status;
@@ -224,6 +230,8 @@ conf_pool_deinit(struct conf_pool *cp)
         conf_server_deinit(array_pop(&cp->server));
     }
     array_deinit(&cp->server);
+
+    string_deinit(&cp->failover_name);
 
     log_debug(LOG_VVERB, "deinit conf pool %p", cp);
 }
@@ -280,6 +288,9 @@ conf_pool_each_transform(void *elem, void *data)
     sp->auto_eject_hosts = cp->auto_eject_hosts ? 1 : 0;
     sp->preconnect = cp->preconnect ? 1 : 0;
 
+    sp->failover_name = cp->failover_name;
+    sp->failover = NULL;
+
     status = server_init(&sp->server, &cp->server, sp);
     if (status != NC_OK) {
         return status;
@@ -329,6 +340,11 @@ conf_dump(struct conf *cf)
                   cp->server_retry_timeout);
         log_debug(LOG_VVERB, "  server_failure_limit: %d",
                   cp->server_failure_limit);
+        if (cp->failover_name.len != 0) {
+          log_debug(LOG_VVERB, "  failover: \"%.*s\"", cp->failover_name.len, cp->failover_name.data);
+        } else {
+          log_debug(LOG_VVERB, "  no failover");
+        }
 
         nserver = array_n(&cp->server);
         log_debug(LOG_VVERB, "  servers: %"PRIu32"", nserver);

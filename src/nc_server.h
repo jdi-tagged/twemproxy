@@ -121,6 +121,8 @@ struct server_pool {
     uint32_t           server_connections;   /* maximum # server connection */
     int64_t            server_retry_timeout; /* server retry timeout in usec */
     uint32_t           server_failure_limit; /* server failure limit */
+    struct string      failover_name;          /* failover pool name */
+    struct server_pool *failover;              /* failover pool */
     unsigned           auto_eject_hosts:1;   /* auto_eject_hosts? */
     unsigned           preconnect:1;         /* preconnect? */
     unsigned           redis:1;              /* redis? */
