@@ -117,6 +117,28 @@ server_each_set_owner(void *elem, void *data)
     return NC_OK;
 }
 
+static rstatus_t
+server_pool_each_set_failover(void *elem, void *data)
+{
+    struct server_pool *sp = elem, *pool;
+    struct array *pool_array = data;
+    uint32_t pool_index;
+
+    if (string_empty(&sp->failover_name)) {
+        return NC_OK;
+    }
+    for (pool_index = 0; pool_index < array_n(pool_array); pool_index++) {
+        pool = array_get(pool_array, pool_index);
+
+        if (string_compare(&pool->name, &sp->failover_name) == 0 &&
+            pool->redis == sp->redis) {
+            sp->failover = pool;
+            return NC_OK;
+        }
+    }
+    return NC_ERROR;
+}
+
 rstatus_t
 server_init(struct array *server, struct array *conf_server,
             struct server_pool *sp)
@@ -251,28 +273,31 @@ static void
 server_failure(struct context *ctx, struct server *server)
 {
     struct server_pool *pool = server->owner;
-    int64_t now, next;
+    int64_t now;
     rstatus_t status;
-
-    if (!pool->auto_eject_hosts) {
-        return;
-    }
-
-    server->failure_count++;
+    bool is_reconnect;
 
     log_debug(LOG_VERB, "server '%.*s' failure count %"PRIu32" limit %"PRIu32,
               server->pname.len, server->pname.data, server->failure_count,
               pool->server_failure_limit);
 
-    if (server->failure_count < pool->server_failure_limit) {
-        return;
-    }
-
     now = nc_usec_now();
     if (now < 0) {
         return;
     }
-    next = now + pool->server_retry_timeout;
+    server->next_retry = now + pool->server_retry_timeout;
+
+    server->failure_count++;
+    is_reconnect = (server->fail != FAIL_STATUS_NORMAL) ? true : false;
+
+    if (is_reconnect) {
+        add_failed_server(ctx, server);
+        return;
+    }
+
+    if (server->failure_count < pool->server_failure_limit) {
+        return;
+    }
 
     log_debug(LOG_INFO, "update pool %"PRIu32" '%.*s' to delete server '%.*s' "
               "for next %"PRIu32" secs", pool->idx, pool->name.len,
@@ -282,13 +307,13 @@ server_failure(struct context *ctx, struct server *server)
     stats_pool_incr(ctx, pool, server_ejects);
 
     server->failure_count = 0;
-    server->next_retry = next;
 
     status = server_pool_run(pool);
     if (status != NC_OK) {
         log_error("updating pool %"PRIu32" '%.*s' failed: %s", pool->idx,
                   pool->name.len, pool->name.data, strerror(errno));
     }
+    add_failed_server(ctx, server);
 }
 
 static void
@@ -553,10 +578,6 @@ server_pool_update(struct server_pool *pool)
     int64_t now;
     uint32_t pnlive_server; /* prev # live server */
 
-    if (!pool->auto_eject_hosts) {
-        return NC_OK;
-    }
-
     if (pool->next_rebuild == 0LL) {
         return NC_OK;
     }
@@ -658,6 +679,25 @@ server_pool_conn(struct context *ctx, struct server_pool *pool, uint8_t *key,
 
     /* from a given {key, keylen} pick a server from pool */
     server = server_pool_server(pool, key, keylen);
+    if (server == NULL || server->fail != FAIL_STATUS_NORMAL) {
+        struct server_pool *failover = pool->failover;
+        if (failover != NULL) {
+            /* Fallback to the failover pool */
+            server = NULL;
+            status = server_pool_update(failover);
+            if (status == NC_OK) {
+                server = server_pool_server(failover, key, keylen);
+            }
+            if (server != NULL && server->fail == FAIL_STATUS_NORMAL) {
+                log_debug(LOG_VERB, "fellback to failover connection to good server '%.*s'", server->pname.len, server->pname.data);
+            } else if (server != NULL) {
+                log_debug(LOG_VERB, "failed fallback to failover connection to dead server '%.*s'", server->pname.len, server->pname.data);
+            } else {
+                log_debug(LOG_VERB, "failed fallback to failover connection, no server");
+            }
+        }
+    }
+
     if (server == NULL) {
         return NULL;
     }
@@ -799,6 +839,14 @@ server_pool_init(struct array *server_pool, struct array *conf_pool,
         return status;
     }
 
+    /* set failover pool for each server pool */
+    status = array_each(server_pool, server_pool_each_set_failover, server_pool);
+    if (status != NC_OK) {
+        log_error("server: failed to set failover pool");
+        server_pool_deinit(server_pool);
+        return status;
+    }
+
     /* update server pool continuum */
     status = array_each(server_pool, server_pool_each_run, NULL);
     if (status != NC_OK) {
@@ -839,4 +887,150 @@ server_pool_deinit(struct array *server_pool)
     array_deinit(server_pool);
 
     log_debug(LOG_DEBUG, "deinit %"PRIu32" pools", npool);
+}
+
+static struct msg *
+heartbeat_msg_get(struct conn *conn)
+{
+    struct msg *msg;
+
+    ASSERT(conn->client && !conn->proxy);
+
+    msg = msg_get(conn, true, conn->redis);
+    if (msg == NULL) {
+        conn->err = errno;
+    }
+
+    return msg;
+}
+
+static uint32_t
+set_heartbeat_command(struct mbuf *mbuf, int redis)
+{
+#define HEARTBEAT_MEMCACHE_COMMAND "get twemproxy\r\n"
+#define HEARTBEAT_REDIS_COMMAND "*2\r\n$3\r\nget\r\n$9\r\ntwemproxy\r\n"
+    char *command;
+    uint32_t n;
+
+    command = redis ? HEARTBEAT_REDIS_COMMAND : HEARTBEAT_MEMCACHE_COMMAND;
+    n = (uint32_t)strlen(command);
+
+    memcpy(mbuf->last, command, n);
+    ASSERT((mbuf->last + n) <= mbuf->end);
+
+    return n;
+}
+
+static rstatus_t
+send_heartbeat(struct context *ctx, struct conn *conn, struct server *server)
+{
+    struct mbuf *mbuf;
+    uint32_t n;
+    struct msg *msg;
+    struct server_pool *pool;
+    struct conn *c_conn;
+
+    pool = (struct server_pool *)(server->owner);
+
+    c_conn = conn_get(pool, true, conn->redis);
+    if (c_conn == NULL) {
+        return NC_ERROR;
+    }
+
+    msg = heartbeat_msg_get(c_conn);
+    if (msg == NULL) {
+        return NC_ERROR;
+    }
+
+    c_conn->rmsg = msg;
+    mbuf = STAILQ_LAST(&msg->mhdr, mbuf, next);
+    if (mbuf == NULL || mbuf_full(mbuf)) {
+        mbuf = mbuf_get();
+        if (mbuf == NULL) {
+            return NC_ERROR;
+        }
+        mbuf_insert(&msg->mhdr, mbuf);
+        msg->pos = mbuf->pos;
+    }
+    ASSERT(mbuf->end - mbuf->last > 0);
+
+    n = set_heartbeat_command(mbuf, conn->redis);
+    mbuf->last += n;
+    msg->mlen += n;
+
+    msg->swallow = 1;
+    server->fail = FAIL_STATUS_ERR_TRY_HEARTBEAT;
+
+    return event_add_out_with_conn(ctx, conn, msg);
+}
+
+void
+server_restore(struct context *ctx, struct conn *conn)
+{
+    struct server *server;
+
+    server = (struct server *)(conn->owner);
+    ASSERT(server != NULL);
+
+    if (server->fail == FAIL_STATUS_NORMAL) {
+        return;
+    }
+
+    send_heartbeat(ctx, conn, server);
+}
+
+rstatus_t
+server_reconnect(struct context *ctx, struct server *server)
+{
+    rstatus_t status;
+    struct conn *conn;
+
+    conn = server_conn(server);
+    if (conn == NULL) {
+        return NC_ERROR;
+    }
+
+    status = server_connect(ctx, server, conn);
+    if (status == NC_OK) {
+        if (conn->connected) {
+            conn->restore(ctx, conn);
+        }
+    } else {
+        server_close(ctx, conn);
+    }
+
+    return status;
+}
+
+void
+add_failed_server(struct context *ctx, struct server *server)
+{
+    struct server **pserver;
+
+    server->fail = FAIL_STATUS_ERR_TRY_CONNECT;
+    pserver = (struct server **)array_push(ctx->fails);
+    *pserver = server;
+}
+
+void
+server_restore_from_heartbeat(struct server *server, struct conn *conn)
+{
+    struct server_pool *pool;
+    rstatus_t status;
+
+    conn->unref(conn);
+    conn_put(conn);
+    pool = (struct server_pool *)server->owner;
+    server->fail = FAIL_STATUS_NORMAL;
+
+    status = server_pool_run(pool);
+    if (status == NC_OK) {
+        log_debug(LOG_NOTICE, "updating pool %"PRIu32" '%.*s',"
+                "restored server '%.*s'", pool->idx,
+                pool->name.len, pool->name.data,
+                server->name.len, server->name.data);
+    } else {
+        log_error("updating pool %"PRIu32" '%.*s' failed: %s", pool->idx,
+                pool->name.len, pool->name.data, strerror(errno));
+    }
 }

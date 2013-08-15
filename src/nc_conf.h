@@ -87,6 +87,7 @@ struct conf_pool {
     int                server_retry_timeout;  /* server_retry_timeout: in msec */
     int                server_failure_limit;  /* server_failure_limit: */
     struct array       server;                /* servers: conf_server[] */
+    struct string      failover_name;         /* failover pool name */
     unsigned           valid:1;               /* valid? */
 };
 
