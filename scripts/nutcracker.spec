@@ -1,7 +1,7 @@
 Summary: Twitter's nutcracker redis and memcached proxy
 Name: nutcracker
 Version: 0.2.4
-Release: tagged2
+Release: tagged3
 URL: https://github.com/jdi-tagged/twemproxy
 Source0: %{name}-%{version}.tar.gz
 License: Apache License 2.0
@@ -32,8 +32,7 @@ autoreconf -fvi
 #Install init script
 %{__install} -p -D -m 0755 scripts/%{name}.init %{buildroot}%{_initrddir}/%{name}
 
-#Install example confog file
-%{__install} -p -D -m 0644 conf/%{name}.yml %{buildroot}%{_sysconfdir}/%{name}/%{name}.yml
+mkdir -p %{buildroot}/var/log/nutcracker
 
 %post
 /sbin/chkconfig --add %{name}
@@ -48,8 +47,8 @@ fi
 [ %{buildroot} != "/" ] && rm -rf %{buildroot}
 
 %files
-%defattr(-,root,root,-)
-/usr/sbin/nutcracker
-/usr/share/man/man8/nutcracker.8.gz
-%{_initrddir}/%{name}
-%config(noreplace)%{_sysconfdir}/%{name}/%{name}.yml
+%defattr(-,nobody,nobody,-)
+%attr(-,root,root) /usr/sbin/nutcracker
+%attr(-,root,root) /usr/share/man/man8/nutcracker.8.gz
+%attr(-,root,root) %{_initrddir}/%{name}
+%dir /var/log/nutcracker
