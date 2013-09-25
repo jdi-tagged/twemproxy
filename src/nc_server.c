@@ -299,7 +299,7 @@ server_failure(struct context *ctx, struct server *server)
         return;
     }
 
-    log_debug(LOG_INFO, "update pool %"PRIu32" '%.*s' to delete server '%.*s' "
+    log_debug(LOG_NOTICE, "update pool %"PRIu32" '%.*s' to delete server '%.*s' "
               "for next %"PRIu32" secs", pool->idx, pool->name.len,
               pool->name.data, server->pname.len, server->pname.data,
               pool->server_retry_timeout / 1000 / 1000);
@@ -550,7 +550,7 @@ server_connected(struct context *ctx, struct conn *conn)
     conn->connecting = 0;
     conn->connected = 1;
 
-    log_debug(LOG_INFO, "connected on s %d to server '%.*s'", conn->sd,
+    log_debug(LOG_NOTICE, "connected on s %d to server '%.*s'", conn->sd,
               server->pname.len, server->pname.data);
 }
 
