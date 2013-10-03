@@ -187,6 +187,7 @@ struct msg {
     uint8_t              *key_end;        /* key end */
 
     uint32_t             vlen;            /* value length (memcache) */
+    uint32_t             vlen_rem;        /* value length remaining for parse phase (memcache) */
     uint8_t              *end;            /* end marker (memcache) */
 
     uint8_t              *narg_start;     /* narg start (redis) */
