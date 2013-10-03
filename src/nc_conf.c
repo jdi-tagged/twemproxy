@@ -66,6 +66,10 @@ static struct command conf_commands[] = {
       conf_set_num,
       offsetof(struct conf_pool, backlog) },
 
+    { string("item_size_max"),
+      conf_set_num,
+      offsetof(struct conf_pool, item_size_max) },
+
     { string("client_connections"),
       conf_set_num,
       offsetof(struct conf_pool, client_connections) },
@@ -185,6 +189,7 @@ conf_pool_init(struct conf_pool *cp, struct string *name)
 
     cp->timeout = CONF_UNSET_NUM;
     cp->backlog = CONF_UNSET_NUM;
+    cp->item_size_max = CONF_UNSET_NUM;
 
     cp->client_connections = CONF_UNSET_NUM;
 
@@ -279,6 +284,7 @@ conf_pool_each_transform(void *elem, void *data)
     sp->redis = cp->redis ? 1 : 0;
     sp->timeout = cp->timeout;
     sp->backlog = cp->backlog;
+    sp->item_size_max = (uint32_t)cp->item_size_max;
 
     sp->client_connections = (uint32_t)cp->client_connections;
 
@@ -325,6 +331,7 @@ conf_dump(struct conf *cf)
                   cp->listen.pname.len, cp->listen.pname.data);
         log_debug(LOG_VVERB, "  timeout: %d", cp->timeout);
         log_debug(LOG_VVERB, "  backlog: %d", cp->backlog);
+        log_debug(LOG_VVERB, "  item_size_max: %d", cp->item_size_max);
         log_debug(LOG_VVERB, "  hash: %d", cp->hash);
         log_debug(LOG_VVERB, "  hash_tag: \"%.*s\"", cp->hash_tag.len,
                   cp->hash_tag.data);
@@ -1247,6 +1254,10 @@ conf_validate_pool(struct conf *cf, struct conf_pool *cp)
 
     if (cp->backlog == CONF_UNSET_NUM) {
         cp->backlog = CONF_DEFAULT_LISTEN_BACKLOG;
+    }
+
+    if (cp->item_size_max == CONF_UNSET_NUM) {
+        cp->item_size_max = CONF_DEFAULT_ITEM_SIZE_MAX;
     }
 
     cp->client_connections = CONF_DEFAULT_CLIENT_CONNECTIONS;
