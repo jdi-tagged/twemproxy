@@ -45,7 +45,7 @@
 #define CONF_DEFAULT_DIST                    DIST_KETAMA
 #define CONF_DEFAULT_TIMEOUT                 -1
 #define CONF_DEFAULT_LISTEN_BACKLOG          512
-#define CONF_DEFAULT_ITEM_SIZE_MAX           1048576 - 256 - 64        /* in bytes, worst case: assumes max key & some extra overhead */
+#define CONF_DEFAULT_ITEM_SIZE_MAX           1048576 - 256 - 80        /* in bytes, worst case: assumes max key & some extra overhead */
 #define CONF_DEFAULT_CLIENT_CONNECTIONS      0
 #define CONF_DEFAULT_REDIS                   false
 #define CONF_DEFAULT_PRECONNECT              false
