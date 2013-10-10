@@ -33,6 +33,7 @@ autoreconf -fvi
 %{__install} -p -D -m 0755 scripts/%{name}.init %{buildroot}%{_initrddir}/%{name}
 
 mkdir -p %{buildroot}/var/log/nutcracker
+mkdir -p %{buildroot}/var/run/nutcracker
 
 %post
 /sbin/chkconfig --add %{name}
