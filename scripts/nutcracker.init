@@ -8,12 +8,32 @@
 # Source function library.
 . /etc/rc.d/init.d/functions
 
-USER="nobody"
-OPTIONS="-d -c /etc/nutcracker/nutcracker.yml"
+prog="nutcracker"
 
-if [ -f /etc/sysconfig/nutcracker ];then
-    . /etc/sysconfig/nutcracker
+NODES=`ls -ld /sys/devices/system/node/node* | wc -l`
+USER="nobody"
+
+# EXISTING:
+# OPTIONS="-d -c /etc/webtagconfig/nutcracker.yml -o /var/log/nutcracker/nutcracker.log -s 2222 -v 5"
+
+# Defaults, may be overriden in sysconfig
+INSTANCES=$NODES
+[[ "$INSTANCES" -lt 2 ]] && INSTANCES=2
+# Default options for first instance.  Options for other instances can be provided in sysconfig as OPTIONS_2, etc.
+OPTIONS="-d -c /etc/${prog}/${prog}.yml"
+
+if [ -f /etc/sysconfig/${prog} ];then
+    . /etc/sysconfig/${prog}
 fi
+
+# Only start instances for which we have options
+for i in `seq 2 ${INSTANCES}`; do
+    optvar="OPTIONS_${i}"
+    if [ -z "${!optvar}" ]; then
+        let INSTANCES=${i}-1
+        break
+    fi
+done
 
 # Check that networking is up.
 if [ "$NETWORKING" = "no" ]
@@ -22,23 +42,43 @@ then
 fi
 
 RETVAL=0
-prog="nutcracker"
-
 start () {
-    echo -n $"Starting $prog: "
-    daemon --user ${USER} ${prog} $OPTIONS
-    RETVAL=$?
-    echo
-    [ $RETVAL -eq 0 ] && touch /var/lock/subsys/${prog}
+    chown $USER /var/run/${prog}
+    for i in `seq 1 ${INSTANCES}`; do
+        setpidlock $i
+        echo -n $"Starting $prog instance ${i}: "
+        if [ ${i} -gt 1 ]; then
+            optvar="OPTIONS_${i}"
+            OPTIONS="${!optvar}"
+        fi
+        if [ ${NODES} -gt 1 ]; then
+            echo 100 > /sys/kernel/mm/redhat_transparent_hugepage/khugepaged/scan_sleep_millisecs
+            let NODE=${i}-1
+            PORT=${PORT} daemon --user ${USER} --check=${prog} numactl --cpunodebind=${NODE} --preferred=${NODE} ${prog} -p ${pidfile} $OPTIONS
+        else
+            PORT=${PORT} daemon --user ${USER} --check=${prog} ${prog} -p ${pidfile} $OPTIONS
+        fi
+        RETVAL=$?
+        echo
+        [ $RETVAL = 0 ] && touch ${lockfile}
+    done
 }
+
 stop () {
-    echo -n $"Stopping $prog: "
-    killproc ${prog}
-    RETVAL=$?
-    echo
-    if [ $RETVAL -eq 0 ] ; then
-        rm -f /var/lock/subsys/${prog}
-    fi
+    for i in `seq 1 ${INSTANCES}`; do
+        setpidlock $i
+        echo -n $"Stopping $prog on instance ${i}: "
+        killproc -p "${pidfile}" ${prog}
+        RETVAL=$?
+        echo
+        [ $RETVAL = 0 ] && rm -f ${lockfile} ${pidfile}
+    done
+}
+
+setpidlock() {
+    i=$1
+    pidfile=/var/run/${prog}/${prog}.${i}.pid
+    lockfile=/var/lock/subsys/${prog}${i}
 }
 
 restart () {
@@ -62,7 +102,7 @@ case "$1" in
     restart
     ;;
   condrestart)
-    [ -f /var/lock/subsys/nutcracker ] && restart || :
+    [ -f /var/lock/subsys/${prog} ] && restart || :
     ;;
   *)
     echo $"Usage: $0 {start|stop|status|restart|reload|condrestart}"
