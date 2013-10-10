@@ -73,6 +73,9 @@ stop () {
         echo
         [ $RETVAL = 0 ] && rm -f ${lockfile} ${pidfile}
     done
+    # Temporary Backup for tagged5 -> tagged6 transition
+    pkill -u nobody nutcracker
+    rm -f /var/lock/subsys/nutcracker
 }
 
 setpidlock() {
