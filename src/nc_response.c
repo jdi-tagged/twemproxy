@@ -256,7 +256,7 @@ rsp_recv_done(struct context *ctx, struct conn *conn, struct msg *msg,
     /* some errors like object-too-big can come while we are still sending the message;
        if so we must stop sending immediately. */
     rqmsg = TAILQ_FIRST(&conn->imsg_q);
-    if (rqmsg != NULL && !rqmsg->done) {
+    if (rqmsg != NULL && !rqmsg->done && TAILQ_FIRST(&conn->omsg_q) == NULL) {
         log_debug(LOG_NOTICE, "live request rsp %"PRIu64" len %"PRIu32" on s %d",
                   msg->id, msg->mlen, conn->sd);
         log_debug(LOG_ERR, "cancelling req %"PRIu64" len %"PRIu32" on s %d",
