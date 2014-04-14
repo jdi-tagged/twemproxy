@@ -360,6 +360,46 @@ req_recv_next(struct context *ctx, struct conn *conn, bool alloc)
     return msg;
 }
 
+static void
+direct_reply(struct context *ctx, struct conn *conn, struct msg *smsg, char *_msg) {
+    struct mbuf *mbuf;
+    int n;
+    struct msg *msg = msg_get(conn, true, conn->redis);
+    if (msg == NULL) {
+        conn->err = errno;
+        conn->done = 1;
+        return;
+    }
+
+    mbuf = STAILQ_LAST(&msg->mhdr, mbuf, next);
+    if (mbuf == NULL || mbuf_full(mbuf)) {
+        mbuf = mbuf_get();
+        if (mbuf != NULL) {
+            mbuf_insert(&msg->mhdr, mbuf);
+            msg->pos = mbuf->pos;
+        }
+    }
+    if (mbuf == NULL) {
+        conn->err = errno;
+        conn->done = 1;
+        msg_put(msg);
+        return;
+    }
+
+    smsg->peer = msg;
+    msg->peer = smsg;
+    msg->request = 0;
+
+    n = (int)strlen(_msg);
+    memcpy(mbuf->last, _msg, (size_t)n);
+    mbuf->last += n;
+    msg->mlen += (uint32_t)n;
+    smsg->done = 1;
+
+    event_add_out(ctx->evb, conn);
+    conn->enqueue_outq(ctx, conn, smsg);
+}
+
 static bool
 req_filter(struct context *ctx, struct conn *conn, struct msg *msg)
 {
@@ -389,6 +429,18 @@ req_filter(struct context *ctx, struct conn *conn, struct msg *msg)
         return true;
     }
 
+    /*
+     * Handle "PING\r\n", which should test that all/one (depending on auto_eject_hosts and
+     * failover pool) of the servers are actually alive.  Until that day it's better to give
+     * the client an incomplete answer than to kill them.
+     */
+    if (msg->type == MSG_REQ_REDIS_PING) {
+        log_debug(LOG_INFO, "filter ping req %"PRIu64" from c %d", msg->id,
+                  conn->sd);
+        direct_reply(ctx, conn, msg, "+PONG\r\n");
+        return true;
+    }
+
     /* Handle excessively large request payloads */
     if (msg->vlen > pool->item_size_max) {
         ASSERT(conn->rmsg == NULL);
@@ -400,17 +452,6 @@ req_filter(struct context *ctx, struct conn *conn, struct msg *msg)
     } else {
         log_debug(LOG_DEBUG, "filter size %"PRIu32" req %"PRIu64" from c %d",
                 msg->vlen, msg->id, conn->sd);
-    }
-
-    /*
-     * Hanlde "PING\r\n"
-     *
-     */
-    if (msg->type == MSG_REQ_REDIS_PING) {
-        log_debug(LOG_INFO, "filter ping req %"PRIu64" from c %d", msg->id,
-                  conn->sd);
-        reply(ctx, conn, msg, "+PONG\r\n");
-        return true;
     }
 
     return false;
