@@ -9,54 +9,57 @@
 . /etc/rc.d/init.d/functions
 
 prog="nutcracker"
+sysconfig=/etc/sysconfig/${prog}
+lockfile=/var/lock/subsys/${prog}
 
 NODES=`ls -ld /sys/devices/system/node/node* | wc -l`
 USER="nobody"
 
-# EXISTING:
-# OPTIONS="-d -c /etc/webtagconfig/nutcracker.yml -o /var/log/nutcracker/nutcracker.log -s 2222 -v 5"
-
 # Defaults, may be overriden in sysconfig
-INSTANCES=$NODES
-[[ "$INSTANCES" -lt 2 ]] && INSTANCES=2
-# Default options for first instance.  Options for other instances can be provided in sysconfig as OPTIONS_2, etc.
-OPTIONS="-d -c /etc/${prog}/${prog}.yml"
+DEFAULT_STATS_PORT=2222
+DEFAULT_LOG_LEVEL=5
 
-if [ -f /etc/sysconfig/${prog} ];then
-    . /etc/sysconfig/${prog}
-fi
-
-# Only start instances for which we have options
-for i in `seq 2 ${INSTANCES}`; do
-    optvar="OPTIONS_${i}"
-    if [ -z "${!optvar}" ]; then
-        let INSTANCES=${i}-1
-        break
-    fi
-done
-
-# Check that networking is up.
-if [ "$NETWORKING" = "no" ]
+# Check that networking is up and that we have some config
+if [ "$NETWORKING" = "no" -o ! -d ${sysconfig} -o "$(echo ${sysconfig}/*)" = "${sysconfig}/*" ]
 then
     exit 0
 fi
 
+# Find all files in /etc/sysconfig/nutcracker and make instances for them
+#
+# Each file must define these variables:
+#  CONFIG_FILE    The yml config file for this instance
+# Each file may define these variables:
+#  STATS_PORT     Port to bind for stats, defaults to 2222
+#  LOG_LEVEL      Level to log at, defaults to 5
+#  EXTRA_OPTS     Extra options to pass to nutcracker, defaults to empty
+#  LOCK_NODE      Which numa node (0 or 1 supported currently) to bind to, defaults to empty which means unbound
+#
+unset INSTANCE_OPTIONS LOCK_OPTIONS INSTANCE_NAMES
+INSTANCES=( $(echo ${sysconfig}/*) )
+NINSTANCES=${#INSTANCES[*]}
+for i in $(seq 0 $((${NINSTANCES}-1))); do
+    STATS_PORT=${DEFAULT_STATS_PORT}
+    LOG_LEVEL=${DEFAULT_LOG_LEVEL}
+    unset EXTRA_OPTS CONFIG_FILE LOCK_NODE
+    . ${INSTANCES[$i]}
+    INSTANCE_NAMES[$i]=$(basename ${INSTANCES[$i]})
+    INSTANCE_OPTIONS[$i]="-d -c ${CONFIG_FILE} -o /var/log/${prog}/${INSTANCE_NAMES[$i]}.log -s ${STATS_PORT} -v ${LOG_LEVEL}"
+    LOCK_OPTIONS[$i]="${LOCK_NODE}"
+done
+
 RETVAL=0
 start () {
     chown $USER /var/run/${prog}
-    for i in `seq 1 ${INSTANCES}`; do
-        setpidlock $i
-        echo -n $"Starting $prog instance ${i}: "
-        if [ ${i} -gt 1 ]; then
-            optvar="OPTIONS_${i}"
-            OPTIONS="${!optvar}"
-        fi
-        if [ ${NODES} -gt 1 ]; then
+    for i in $(seq 0 $((${NINSTANCES}-1))); do
+        echo -n $"Starting $prog instance:  ${INSTANCE_NAMES[$i]}: "
+        OPTIONS=${INSTANCE_OPTIONS[$i]}
+        NODE=${LOCK_OPTIONS[$i]}
+        if [ ${NODES} -gt 1 -a -n "${NODE}" ]; then
             echo 100 > /sys/kernel/mm/redhat_transparent_hugepage/khugepaged/scan_sleep_millisecs
-            let NODE=${i}-1
-            PORT=${PORT} daemon --user ${USER} --check=${prog} numactl --cpunodebind=${NODE} --preferred=${NODE} ${prog} -p ${pidfile} $OPTIONS
+            daemon --user ${USER} --check=${prog} numactl --cpunodebind=${NODE} --preferred=${NODE} ${prog} $OPTIONS
         else
-            PORT=${PORT} daemon --user ${USER} --check=${prog} ${prog} -p ${pidfile} $OPTIONS
+            daemon --user ${USER} --check=${prog} ${prog} $OPTIONS
         fi
         RETVAL=$?
         echo
@@ -65,23 +68,17 @@ start () {
 }
 
 stop () {
-    for i in `seq 1 ${INSTANCES}`; do
-        setpidlock $i
-        echo -n $"Stopping $prog on instance ${i}: "
-        killproc -p "${pidfile}" ${prog}
-        RETVAL=$?
-        echo
-        [ $RETVAL = 0 ] && rm -f ${lockfile} ${pidfile}
-    done
-    # Temporary Backup for tagged5 -> tagged6 transition
-    pkill -u nobody nutcracker
-    rm -f /var/lock/subsys/nutcracker
-}
-
-setpidlock() {
-    i=$1
-    pidfile=/var/run/${prog}/${prog}.${i}.pid
-    lockfile=/var/lock/subsys/${prog}${i}
+    # Pkill is a lot easier and safer than pid files
+    echo -n $"Stopping $prog instances:  ${INSTANCE_NAMES[@]:0}: "
+    pkill -u ${USER} ${prog}
+    RETVAL=$?
+    if [ $RETVAL = 0 ]; then
+        echo_success
+        rm -f ${lockfile}
+    else
+        echo_failure
+    fi
+    echo
 }
 
 restart () {
@@ -105,7 +102,7 @@ case "$1" in
     restart
     ;;
   condrestart)
-    [ -f /var/lock/subsys/${prog} ] && restart || :
+    [ -f ${lockfile} ] && restart || :
     ;;
   *)
     echo $"Usage: $0 {start|stop|status|restart|reload|condrestart}"
