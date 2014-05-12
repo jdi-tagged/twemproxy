@@ -27,7 +27,7 @@ fi
 
 # Find all files in /etc/sysconfig/nutcracker and make instances for them
 #
-# Each file must define these variables:
+# Each file must define this variable:
 #  CONFIG_FILE    The yml config file for this instance
 # Each file may define these variables:
 #  STATS_PORT     Port to bind for stats, defaults to 2222
@@ -44,7 +44,7 @@ for i in $(seq 0 $((${NINSTANCES}-1))); do
     unset EXTRA_OPTS CONFIG_FILE LOCK_NODE
     . ${INSTANCES[$i]}
     INSTANCE_NAMES[$i]=$(basename ${INSTANCES[$i]})
-    INSTANCE_OPTIONS[$i]="-d -c ${CONFIG_FILE} -o /var/log/${prog}/${INSTANCE_NAMES[$i]}.log -s ${STATS_PORT} -v ${LOG_LEVEL}"
+    INSTANCE_OPTIONS[$i]="-d -c ${CONFIG_FILE} -o /var/log/${prog}/${INSTANCE_NAMES[$i]}.log ${EXTRA_OPTS} -s ${STATS_PORT} -v ${LOG_LEVEL}"
     LOCK_OPTIONS[$i]="${LOCK_NODE}"
 done
 
