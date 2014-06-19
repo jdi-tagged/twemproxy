@@ -9,7 +9,7 @@ def twemproxy_project = new Project(
         githubOwner: 'jdi-tagged',
         githubProject: 'twemproxy',
         githubHost: 'github.com',
-        hipchatRoom:'Pets',
+        hipchatRoom:'PetsDev',
         email: 'jirwin@tagged.com'
     ]
 )
